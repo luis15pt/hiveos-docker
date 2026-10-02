@@ -8,14 +8,17 @@
 # Query output matches nvtool: one line per GPU, fields in the order the flags
 # were given (duplicates ignored), ';'-separated (--csv/--tab/--space change
 # the separator), with a trailing separator.
-# Setters (--set*, offsets, fans, clocks) are not supported in a container and
-# exit 3 (NVML_ERROR_NOT_SUPPORTED), which HiveOS's callers treat as non-fatal.
+# Setters (--set*, offsets, fans, clocks) can't change anything in a container.
+# Requests for stock settings (0/empty = reset/auto, or a power limit equal to
+# the current one) succeed as no-ops, since that is what the GPU already runs.
+# Anything else exits 3 (NVML_ERROR_NOT_SUPPORTED), so HiveOS reports
+# "NVIDIA OC failed" only when real overclocking was asked for.
 
 VERSION="1.8.2-container"
 sep=";"
 indexes=()
 fields=()
-setter=0
+setters=()   # "name=value"
 
 add_field() { # keep first occurrence only, like nvtool
 	local f
@@ -48,7 +51,9 @@ while [[ $# -gt 0 ]]; do
 		-t|--temp) add_field temp ;;
 		--*) opt=${1#--}
 			case $opt in
-				set*|reset*) setter=1 ;; # value args are ignored: we exit 3 anyway
+				set*|forcestate)
+					if [[ $# -gt 1 && $2 != --* ]]; then setters+=("$opt=$2"); shift; else setters+=("$opt="); fi ;;
+				reset*) setters+=("$opt=0") ;;
 				statuscode|vbios|memtemp|alltemp|tempinfo|fans|fancount|curpl|defpl|minmaxpl|pcie|memtype|curgen|curwidth|sn|uuid|state|throttle|coreoffset|memoffset|clocksinfo)
 					add_field "$opt" ;;
 				*) ;; # unknown query flag: ignore
@@ -57,8 +62,20 @@ while [[ $# -gt 0 ]]; do
 	shift
 done
 
-# Silent: HiveOS applies OC to every GPU at startup and would log each refusal.
-[[ $setter == 1 ]] && exit 3
+if [[ ${#setters[@]} -gt 0 ]]; then
+	for sv in "${setters[@]}"; do
+		name=${sv%%=*} value=${sv#*=}
+		[[ -z $value || $value =~ ^0+(\.0*)?$ ]] && continue   # reset / auto / no change
+		if [[ $name == setpl ]]; then
+			# A limit equal to the current one is already in effect
+			sel=${indexes[0]:-0}
+			cur=$(nvidia-smi -i "$sel" --query-gpu=power.limit --format=csv,noheader,nounits 2>/dev/null)
+			[[ -n $cur && $(printf '%.0f' "$cur") == $(printf '%.0f' "$value") ]] && continue
+		fi
+		exit 3   # silent: HiveOS logs one "NVIDIA OC failed" for the whole run
+	done
+	exit 0
+fi
 [[ ${#fields[@]} -eq 0 ]] && exit 0
 
 query="index,pci.bus_id,name,vbios_version,serial,uuid,memory.total,memory.used,memory.free,temperature.gpu,temperature.memory,fan.speed,power.draw,power.limit,power.default_limit,power.min_limit,power.max_limit,clocks.gr,clocks.mem,utilization.gpu,utilization.memory,pcie.link.gen.current,pcie.link.width.current,pstate,clocks_event_reasons.active"

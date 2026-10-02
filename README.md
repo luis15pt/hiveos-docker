@@ -66,13 +66,12 @@ just those.
 
 | Feature | Why |
 |---|---|
-| Overclocking, fan control, power limits from the dashboard | NVIDIA's driver only accepts settings changes from real root with `CAP_SYS_ADMIN`. A normal container doesn't have that, and we don't want the HiveOS agent (which takes remote commands) to have it. Set power limits on the host if needed: `sudo nvidia-smi -i 0 -pl 450`. |
+| Overclocking, fan control, power limits from the dashboard (leave OC empty; any real value shows "NVIDIA OC failed") | NVIDIA's driver only accepts settings changes from real root with `CAP_SYS_ADMIN`. A normal container doesn't have that, and we don't want the HiveOS agent (which takes remote commands) to have it. Set power limits on the host if needed: `sudo nvidia-smi -i 0 -pl 450`. |
 | VRAM / memory temperature | NVIDIA's driver (NVML, DCGM, nvidia-smi) reports it only on datacenter GPUs; on GeForce it's `N/A`. Tools that show it read GPU registers through `/dev/mem`, which would mean a privileged container. |
 | HiveOS OS upgrades from the dashboard | The base image's startup scripts are written for HiveOS 0.6-225. Don't click *Upgrade*. |
 
-The startup log still shows a few harmless lines: `ERROR: NVIDIA OC failed`,
-`X server failed to run` and two `grep` lines about missing systemd network
-files.
+The startup log still shows a few harmless lines: `X server failed to run`
+and two `grep` lines about missing systemd network files.
 
 ## How it works
 
@@ -94,7 +93,7 @@ And the scripts in `rootfs/`:
 
 | File | Purpose |
 |---|---|
-| `hive/sbin/nvtool` | Replaces HiveOS's `nvtool`, which refuses to run outside genuine HiveOS ("intended for use only as a part of HIVEOS"), so every GPU showed as MALFUNCTION. Answers the same queries from `nvidia-smi` in nvtool's output format (fields in flag order, `;`-separated). Settings changes exit 3 (not supported), which HiveOS treats as non-fatal. |
+| `hive/sbin/nvtool` | Replaces HiveOS's `nvtool`, which refuses to run outside genuine HiveOS ("intended for use only as a part of HIVEOS"), so every GPU showed as MALFUNCTION. Answers the same queries from `nvidia-smi` in nvtool's output format (fields in flag order, `;`-separated). Settings changes can't be applied: requests for stock values (0 = reset/auto, or the current power limit) succeed as no-ops, anything else exits 3 (not supported) so the dashboard reports "NVIDIA OC failed". |
 | `usr/local/sbin/lspci` | HiveOS finds GPUs with `lspci`, which lists every GPU on the host. This hides NVIDIA GPUs that weren't passed to the container (`nvidia-smi` can't see them), and adds GPUs that `nvidia-smi` sees but the PCI bus doesn't (WSL2). |
 | `usr/local/sbin/lsmod` | HiveOS skips NVIDIA queries unless an `nvidia` kernel module is listed. WSL2 has none; this reports it when `nvidia-smi` works. No effect on native Linux. |
 | `usr/local/sbin/quiet-wrapper` | Linked as `systemctl`, `timedatectl`, `modprobe`, `dmidecode`, etc. Runs the real tool but drops the errors it always prints in a container (no systemd, D-Bus, `/dev/mem`, console or kernel modules). Exit codes and other output are unchanged. |
