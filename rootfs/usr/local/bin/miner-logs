@@ -2,7 +2,7 @@
 # Streams the active miner log(s) to stdout, i.e. to `docker logs`.
 # Re-reads the flight sheet's miners every 10s and switches when they change.
 RIG_CONF=/hive-config/rig.conf
-current=
+current=-   # sentinel, so an empty flight sheet is reported too
 tail_pid=
 
 while true; do
