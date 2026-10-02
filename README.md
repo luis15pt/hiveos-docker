@@ -2,8 +2,8 @@
 
 HiveOS client as a self-contained GPU container. Built for running HiveOS as a
 RunPod pod on our own hardware: the container needs only the GPUs passed in
-and the rig credentials as environment variables. No mounts, no host setup
-beyond the NVIDIA driver and container toolkit.
+and the farm hash as an environment variable. No mounts, no host setup beyond
+the NVIDIA driver and container toolkit.
 
 Image: `ghcr.io/luis15pt/hiveos-docker:latest` (private; built by GitHub
 Actions on every push to `main`).
@@ -22,17 +22,27 @@ Create a template with:
 |---|---|
 | Container image | `ghcr.io/luis15pt/hiveos-docker:latest` |
 | Registry credentials | GitHub username + a token with `read:packages` |
-| Environment variables | `HIVE_ID`, `HIVE_PASS` (required); `HIVE_WORKER`, `HIVE_TOKEN` (optional) |
+| Container start command | leave empty |
+| Volume disk | 0 (nothing needs to persist) |
 | Exposed ports | none needed |
+| Environment variables | see below |
 
-Each pod is one HiveOS rig, so every pod needs its own rig ID and password
-(dashboard: *Farm → Add worker*). Two pods using the same rig ID will fight
-over it. The flight sheet is set in the HiveOS dashboard as usual.
+| Variable | |
+|---|---|
+| `HIVE_TOKEN` | Farm hash (dashboard: *Farm → Settings*). Best stored as a RunPod secret: `{{ RUNPOD_SECRET_hive_farm_hash }}` |
+| `HIVE_WORKER` | Optional worker name. Default: the RunPod pod ID |
+| `HIVE_ID`, `HIVE_PASS` | Optional: connect to an existing worker (*Farm → Add worker*) instead of joining by farm hash |
+
+The same template works on any machine. With a farm hash, each pod joins the
+farm as a worker identified by the **GPUs it was given**: the first start
+creates the worker, and a pod that comes back with the same GPUs (restart,
+redeploy) reconnects to the same worker. A different set of GPUs is a
+different worker. Assign the flight sheet in the HiveOS dashboard as usual.
 
 ### Plain Docker
 
 ```bash
-cp .env.example .env   # fill in HIVE_ID and HIVE_PASS
+cp .env.example .env   # fill in HIVE_TOKEN (or HIVE_ID + HIVE_PASS)
 docker run -d --name hiveos --restart unless-stopped --gpus all \
   --env-file .env --log-opt max-size=10m --log-opt max-file=3 \
   ghcr.io/luis15pt/hiveos-docker:latest
@@ -75,6 +85,8 @@ The image is `hanaik/hiveos` (pinned by digest) plus the changes in
 | `POWER_MAX=1500` in `/hive/bin/sanitize` | HiveOS 0.6-225 reports any GPU drawing over 500 W as 0 W. Backported from HiveOS 0.6-231. |
 | Install `iproute2`, `usbutils`, `cron`, `kbd`, `dmidecode` | Tools HiveOS scripts call that the base image lacks. |
 | Mask `RIG_PASSWD` in the startup config dump and hello response | Keeps the rig password out of `docker logs`. |
+| Rig `uid` from GPU UUIDs when DMI is unreadable (`/hive/bin/hello`) | HiveOS identifies a rig by a hash of the DMI system UUID, CPU ID and first MAC. In a container the first two are unreadable and the MAC is random, so every new container joined the farm as a new worker. Hashing the UUIDs of the GPUs passed in makes the same GPUs come back as the same worker. |
+| Default `HIVE_WORKER` to `$RUNPOD_POD_ID`, else the hostname | Names new workers when joining by farm hash. |
 | `start.sh` runs `miner-logs` instead of sleeping forever | Miner output in `docker logs`. |
 
 And the scripts in `rootfs/`:
