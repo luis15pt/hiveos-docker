@@ -1,0 +1,26 @@
+#!/bin/bash
+# Streams the active miner log(s) to stdout, i.e. to `docker logs`.
+# Re-reads the flight sheet's miners every 10s and switches when they change.
+RIG_CONF=/hive-config/rig.conf
+current=
+tail_pid=
+
+while true; do
+	miners=$(source "$RIG_CONF" 2>/dev/null; echo $MINER $MINER2)
+	if [[ "$miners" != "$current" ]]; then
+		[[ -n $tail_pid ]] && kill "$tail_pid" 2>/dev/null
+		current=$miners
+		tail_pid=
+		if [[ -n $miners ]]; then
+			files=()
+			for m in $miners; do files+=("/var/log/miner/$m/$m.log"); done
+			echo "===== Following miner log: $miners ====="
+			# -F waits for files that don't exist yet (miner still installing)
+			tail -n 20 -F "${files[@]}" 2>/dev/null &
+			tail_pid=$!
+		else
+			echo "===== No miner in flight sheet ====="
+		fi
+	fi
+	sleep 10
+done

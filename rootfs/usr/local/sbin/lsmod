@@ -1,0 +1,12 @@
+#!/bin/bash
+# lsmod wrapper: HiveOS skips all NVIDIA queries unless lsmod lists an
+# "nvidia" module. On WSL2 the GPU works through /dev/dxg with no nvidia
+# kernel module, so report one whenever nvidia-smi can actually see a GPU.
+# On native Linux the real module is already listed and nothing changes.
+out=$(PATH=/usr/sbin:/usr/bin:/sbin:/bin lsmod "$@")
+rc=$?
+echo "$out"
+if ! grep -q '^nvidia ' <<< "$out" && nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
+	echo "nvidia                     0  0"
+fi
+exit $rc

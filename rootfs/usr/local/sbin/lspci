@@ -1,0 +1,115 @@
+#!/bin/bash
+# lspci wrapper: show HiveOS only the NVIDIA GPUs this container was given.
+#
+# HiveOS finds GPUs with lspci, which reads the host's PCI bus and so lists
+# every GPU in the machine. A RunPod pod (or `docker run --gpus device=1`)
+# only gets some of them, and the rest would show up as MALFUNCTION.
+# This wrapper:
+#   - hides NVIDIA display devices nvidia-smi can't see (not passed through),
+#   - adds GPUs nvidia-smi sees but lspci doesn't (WSL2 exposes GPUs via
+#     /dev/dxg, not PCI) and hides WSL's "Basic Render Driver",
+#   - passes everything else through unchanged.
+# Without a working nvidia-smi it behaves exactly like the real lspci.
+REAL=/usr/bin/lspci
+CACHE=/run/hive/visible-gpus   # nvidia-smi is slow; HiveOS calls lspci a lot
+
+visible_gpus() { # lines: busid devid vendid subdev subvend name
+	if [[ -f $CACHE && $(( $(date +%s) - $(stat -c %Y $CACHE) )) -lt 60 ]]; then
+		cat "$CACHE"; return
+	fi
+	local out
+	out=$(nvidia-smi --query-gpu=pci.bus_id,pci.device_id,pci.sub_device_id,name \
+			--format=csv,noheader 2>/dev/null |
+		while IFS=', ' read -r bus dev sub name; do
+			bus=${bus#00000000:}; dev=${dev,,}; sub=${sub,,}
+			echo "${bus,,} ${dev:2:4} ${dev:6:4} ${sub:2:4} ${sub:6:4} ${name#NVIDIA }"
+		done)
+	mkdir -p "${CACHE%/*}" 2>/dev/null && echo "$out" > "$CACHE" 2>/dev/null
+	echo "$out"
+}
+
+gpus=$(visible_gpus)
+[[ -z $gpus ]] && exec "$REAL" "$@"
+declare -A visible=()
+while read -r bus _; do visible[$bus]=1; done <<< "$gpus"
+
+slot= ; numeric=0; machine=0; verbose=0; devfilter=
+args=("$@")
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		-s) slot=$2; shift ;;
+		-d) devfilter=$2; shift ;;
+		-*) o=${1#-}
+			[[ $o == *n* ]] && numeric=1
+			[[ $o == *nn* ]] && numeric=2
+			[[ $o == *m* ]] && machine=1
+			[[ $o == *v* ]] && verbose=1
+			[[ $o == *d ]] && { devfilter=$2; shift; }
+			[[ $o == *s ]] && { slot=$2; shift; } ;;
+	esac
+	shift
+done
+slot=${slot#0000:}; slot=${slot,,}
+
+is_hidden_nvidia() { # @busid @line: an NVIDIA display device we weren't given
+	[[ $2 =~ (VGA|3D|Display).*(NVIDIA|10de:) && -z ${visible[$1]} ]]
+}
+
+# Synthetic entry for a GPU that nvidia-smi sees but the PCI bus doesn't (WSL2)
+emit() { # bus dev vend sdev svend name
+	local bus=$1 dev=$2 vend=$3 sdev=$4 svend=$5 name=$6
+	if [[ $machine == 1 && $verbose == 1 ]]; then
+		if [[ $numeric != 0 ]]; then
+			printf 'Slot:\t%s\nClass:\t0300\nVendor:\t%s\nDevice:\t%s\nSVendor:\t%s\nSDevice:\t%s\nRev:\ta1\n\n' "$bus" "$vend" "$dev" "$svend" "$sdev"
+		else
+			printf 'Slot:\t%s\nClass:\tVGA compatible controller\nVendor:\tNVIDIA Corporation\nDevice:\t%s\nSVendor:\tNVIDIA Corporation\nSDevice:\t%s\nRev:\ta1\n\n' "$bus" "$name" "$name"
+		fi
+	elif [[ $numeric != 0 && $verbose == 1 ]]; then
+		printf '%s VGA compatible controller [0300]: NVIDIA Corporation %s [%s:%s] (rev a1) (prog-if 00 [VGA controller])\n\tSubsystem: NVIDIA Corporation %s [%s:%s]\n\n' "$bus" "$name" "$vend" "$dev" "$name" "$svend" "$sdev"
+	elif [[ $numeric == 2 ]]; then
+		printf '%s VGA compatible controller [0300]: NVIDIA Corporation %s [%s:%s] (rev a1)\n' "$bus" "$name" "$vend" "$dev"
+	elif [[ $numeric == 1 ]]; then
+		printf '%s 0300: %s:%s (rev a1)\n' "$bus" "$vend" "$dev"
+	else
+		printf '%s VGA compatible controller: NVIDIA Corporation %s (rev a1)\n' "$bus" "$name"
+	fi
+}
+
+# Device filter (e.g. -nd 8086::0300) is only used by HiveOS for non-NVIDIA vendors
+[[ -n $devfilter && $devfilter != 10de* ]] && exec "$REAL" "${args[@]}"
+
+real=$("$REAL" "${args[@]}")
+rc=$?
+
+if [[ -n $slot ]]; then
+	if [[ -z $real ]]; then  # not on the PCI bus: synthesize if nvidia-smi has it
+		while read -r bus dev vend sdev svend name; do
+			[[ $bus == "$slot" ]] && { emit "$bus" "$dev" "$vend" "$sdev" "$svend" "$name"; exit 0; }
+		done <<< "$gpus"
+		exit $rc
+	fi
+	# A GPU we weren't given: pretend it isn't there
+	is_hidden_nvidia "$slot" "$(LC_ALL=C "$REAL" -nn -s "$slot")" && exit 1
+	echo "$real"
+	exit $rc
+fi
+
+# Full listing: synthetic GPUs missing from the PCI bus, then the filtered real list
+declare -A onbus=()
+while IFS= read -r line; do
+	bus=${line%% *}; bus=${bus#0000:}; onbus[$bus]=1
+done < <(LC_ALL=C "$REAL")
+while read -r bus dev vend sdev svend name; do
+	[[ -z ${onbus[$bus]} ]] && emit "$bus" "$dev" "$vend" "$sdev" "$svend" "$name"
+done <<< "$gpus"
+
+classes=$(LC_ALL=C "$REAL" -nn)
+while IFS= read -r line; do
+	[[ -z $line ]] && continue
+	bus=${line%% *}; bus=${bus#0000:}
+	[[ $line == *"Basic Render Driver"* ]] && continue
+	cls=$(grep -m1 "^\(0000:\)\?$bus " <<< "$classes")
+	is_hidden_nvidia "$bus" "$cls" && continue
+	echo "$line"
+done <<< "$real"
+exit $rc

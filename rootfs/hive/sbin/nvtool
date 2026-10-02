@@ -1,0 +1,120 @@
+#!/bin/bash
+# nvtool replacement for HiveOS running in a container.
+#
+# HiveOS's own nvtool refuses to run outside genuine HiveOS, so gpu-detect
+# marks every NVIDIA GPU as MALFUNCTION and gpu-stats reports no temps/fans/
+# power. This script answers the same queries from nvidia-smi.
+#
+# Query output matches nvtool: one line per GPU, fields in the order the flags
+# were given (duplicates ignored), ';'-separated (--csv/--tab/--space change
+# the separator), with a trailing separator.
+# Setters (--set*, offsets, fans, clocks) are not supported in a container and
+# exit 3 (NVML_ERROR_NOT_SUPPORTED), which HiveOS's callers treat as non-fatal.
+
+VERSION="1.8.2-container"
+sep=";"
+indexes=()
+fields=()
+setter=0
+
+add_field() { # keep first occurrence only, like nvtool
+	local f
+	for f in "${fields[@]}"; do [[ $f == "$1" ]] && return; done
+	fields+=("$1")
+}
+
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		-h|--help) echo "HiveOS Nvtool $VERSION (nvidia-smi based replacement)"; exit 0 ;;
+		-v|--version) echo "$VERSION"; exit 0 ;;
+		-q|--quiet|--nodev|--onlydaemon|--nodaemon|--force) ;;
+		--daemon|--exit) exit 0 ;;
+		--csv) sep=";" ;;
+		--tab) sep=$'\t' ;;
+		--space) sep=" " ;;
+		-i|--index) indexes+=("$2"); shift ;;
+		--driver) nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1; exit 0 ;;
+		--gpucount) nvidia-smi -L | grep -c '^GPU'; exit 0 ;;
+		-a|--all) for f in busid name meminfo clocks power status temp; do add_field $f; done ;;
+		-b|--busid) add_field busid ;;
+		-d|--device) add_field device ;;
+		-n|--name) add_field name ;;
+		-m|--meminfo) add_field meminfo ;;
+		-c|--clocks) add_field clocks ;;
+		-p|--power) add_field power ;;
+		-u|--usage) add_field usage ;;
+		-f|--fanspeed) add_field fanspeed ;;
+		-s|--status) add_field status ;;
+		-t|--temp) add_field temp ;;
+		--*) opt=${1#--}
+			case $opt in
+				set*|reset*) setter=1 ;; # value args are ignored: we exit 3 anyway
+				statuscode|vbios|memtemp|alltemp|tempinfo|fans|fancount|curpl|defpl|minmaxpl|pcie|memtype|curgen|curwidth|sn|uuid|state|throttle|coreoffset|memoffset|clocksinfo)
+					add_field "$opt" ;;
+				*) ;; # unknown query flag: ignore
+			esac ;;
+	esac
+	shift
+done
+
+# Silent: HiveOS applies OC to every GPU at startup and would log each refusal.
+[[ $setter == 1 ]] && exit 3
+[[ ${#fields[@]} -eq 0 ]] && exit 0
+
+query="index,pci.bus_id,name,vbios_version,serial,uuid,memory.total,memory.used,memory.free,temperature.gpu,temperature.memory,fan.speed,power.draw,power.limit,power.default_limit,power.min_limit,power.max_limit,clocks.gr,clocks.mem,utilization.gpu,utilization.memory,pcie.link.gen.current,pcie.link.width.current,pstate,clocks_event_reasons.active"
+data=$(nvidia-smi --query-gpu=$query --format=csv,noheader,nounits 2>/dev/null) || exit 9
+
+num() { [[ $1 =~ ^-?[0-9.]+$ ]] && echo "$1" || echo 0; } # N/A, [Not Supported] -> 0
+watts() { printf '%.1f' "$(num "$1")"; } # nvtool prints watts with one decimal, e.g. 575.0
+
+while IFS=',' read -r idx bus name vbios sn uuid mtot mused mfree temp mtemp fan pdraw plcur pldef plmin plmax gclk mclk gutil mutil lgen lwidth pstate throttle; do
+	# trim the leading space nvidia-smi puts after each comma
+	for v in idx bus name vbios sn uuid mtot mused mfree temp mtemp fan pdraw plcur pldef plmin plmax gclk mclk gutil mutil lgen lwidth pstate throttle; do
+		printf -v "$v" '%s' "${!v# }"
+	done
+
+	if [[ ${#indexes[@]} -gt 0 ]]; then
+		[[ " ${indexes[*]} " == *" $idx "* ]] || continue
+	fi
+
+	fan=$(num "$fan")
+	out=""
+	for f in "${fields[@]}"; do
+		case $f in
+			busid)      v=$bus ;;
+			device)     v=$idx ;;
+			name)       v=$name ;;
+			vbios)      v=$vbios ;;
+			sn)         v=$sn ;;
+			uuid)       v=$uuid ;;
+			statuscode) v=0 ;;
+			status)     v=Success ;;
+			meminfo)    v="$(num "$mtot")$sep$(num "$mused")$sep$(num "$mfree")" ;;
+			memtype)    v="" ;;
+			temp)       v=$(num "$temp") ;;
+			memtemp)    v=$(num "$mtemp") ;;
+			alltemp)    v="$(num "$temp")$sep$(num "$mtemp")" ;;
+			tempinfo)   v="0${sep}0" ;;
+			fanspeed)   v=$fan ;;
+			fans)       v="0$sep$fan$sep$fan" ;;          # rpm; speed %; target %
+			fancount)   v=1 ;;
+			power)      v=$(watts "$pdraw") ;;
+			curpl)      v=$(watts "$plcur") ;;
+			defpl)      v=$(watts "$pldef") ;;
+			minmaxpl)   v="$(watts "$plmin")$sep$(watts "$plmax")" ;;
+			clocks)     v="$(num "$gclk")$sep$(num "$mclk")" ;;
+			usage)      v="$(num "$gutil")$sep$(num "$mutil")" ;;
+			pcie)       v="" ;;
+			curgen)     v=$(num "$lgen") ;;
+			curwidth)   v=$(num "$lwidth") ;;
+			state)      v=${pstate#P} ;;
+			throttle)   v=$throttle ;;
+			coreoffset|memoffset) v=0 ;;
+			clocksinfo) v="0${sep}0" ;;
+			*)          v="" ;;
+		esac
+		out+="$v$sep"
+	done
+	echo "$out"
+done <<< "$data"
+exit 0

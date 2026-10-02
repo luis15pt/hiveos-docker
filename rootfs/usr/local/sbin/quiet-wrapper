@@ -1,0 +1,12 @@
+#!/bin/bash
+# Installed as systemctl, timedatectl, modprobe, ... in /usr/local/sbin, which
+# HiveOS's PATH searches before /usr/bin. Runs the real tool but drops the
+# errors it always prints inside a container (no systemd, D-Bus, /dev/mem,
+# console or kernel modules). Exit code, stdout and any other errors pass
+# through unchanged. Tools missing from the image exit 127 silently.
+name=$(basename "$0")
+real=$(PATH=/usr/sbin:/usr/bin:/sbin:/bin command -v "$name") || exit 127
+{ "$real" "$@" 2>&1 1>&3 3>&- |
+	grep -vE 'System has not been booted with systemd|Failed to connect (to|system) bus|sd_bus_open_system|/dev/mem: No such file|referring to the console|Module [^ ]+ not found' >&2
+  exit "${PIPESTATUS[0]}"
+} 3>&1
