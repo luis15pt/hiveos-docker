@@ -1,7 +1,7 @@
 # hiveos-docker
 
 Run HiveOS in a Docker container. All it needs is the GPUs and your farm hash.
-Built for RunPod.
+Tested on RunPod.
 
 Image: `ghcr.io/luis15pt/hiveos-docker:latest`
 
