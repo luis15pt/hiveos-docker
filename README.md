@@ -5,12 +5,13 @@ RunPod pod on our own hardware: the container needs only the GPUs passed in
 and the farm hash as an environment variable. No mounts, no host setup beyond
 the NVIDIA driver and container toolkit.
 
-Image: `ghcr.io/luis15pt/hiveos-docker:latest` (private; built by GitHub
+Image: `ghcr.io/luis15pt/hiveos-docker:latest` (public; built by GitHub
 Actions on every push to `main`).
 
-> **Keep the built image private.** It contains closed-source HiveOS packages
-> and scripts from an unofficial, unlicensed base image. This repo only holds
-> our own scripts and a Dockerfile that pulls that base image at build time.
+> The image includes HiveOS's closed-source client packages and scripts from
+> the unofficial `hanaik/hiveos` base image, which has no stated license. This
+> repo itself only holds our own scripts and a Dockerfile that pulls that base
+> image at build time.
 
 ## Running it
 
@@ -21,7 +22,7 @@ Create a template with:
 | Setting | Value |
 |---|---|
 | Container image | `ghcr.io/luis15pt/hiveos-docker:latest` |
-| Registry credentials | GitHub username + a token with `read:packages` |
+| Registry credentials | none (public image) |
 | Container start command | leave empty |
 | Volume disk | 0 (nothing needs to persist) |
 | Exposed ports | none needed |
